@@ -45,7 +45,7 @@
 
     .hud {
       display: grid;
-      grid-template-columns: 1fr auto auto;
+      grid-template-columns: 1fr auto auto auto;
       gap: 10px;
       align-items: center;
     }
@@ -188,7 +188,9 @@
   <main>
     <section class="hud" aria-label="游戏状态">
       <h1>贪吃蛇</h1>
+      <div class="stat">模式 <span id="mode">自动</span></div>
       <div class="stat">分数 <span id="score">0</span></div>
+      <button id="toggle-auto" type="button">手动接管</button>
       <button id="restart" type="button">重新开始</button>
     </section>
 
@@ -204,15 +206,17 @@
       <button class="right" type="button" data-dir="right" aria-label="向右">▶</button>
     </section>
 
-    <p class="hint">方向键 / WASD / 触屏按钮控制。撞墙或咬到自己后自动重新开局。</p>
+    <p class="hint">默认自动玩。点“手动接管”后可用方向键 / WASD / 触屏按钮控制。</p>
   </main>
 
   <script>
     const canvas = document.getElementById("game");
     const ctx = canvas.getContext("2d");
     const scoreEl = document.getElementById("score");
+    const modeEl = document.getElementById("mode");
     const messageEl = document.getElementById("message");
     const restartBtn = document.getElementById("restart");
+    const toggleAutoBtn = document.getElementById("toggle-auto");
 
     const cells = 24;
     const cellSize = canvas.width / cells;
@@ -231,6 +235,7 @@
     let score;
     let lastTick = 0;
     let gameOverAt = 0;
+    let autoPlay = true;
 
     function reset() {
       snake = [
@@ -242,13 +247,19 @@
       nextDir = dirs.right;
       score = 0;
       scoreEl.textContent = score;
+      updateMode();
       gameOverAt = 0;
       food = spawnFood();
-      messageEl.textContent = "游戏已自动开始";
+      messageEl.textContent = "自动模式已开始";
       messageEl.style.opacity = "1";
       setTimeout(() => {
         if (!gameOverAt) messageEl.style.opacity = "0";
       }, 1300);
+    }
+
+    function updateMode() {
+      modeEl.textContent = autoPlay ? "自动" : "手动";
+      toggleAutoBtn.textContent = autoPlay ? "手动接管" : "开启自动";
     }
 
     function spawnFood() {
@@ -270,12 +281,101 @@
       nextDir = candidate;
     }
 
+    function sameCell(a, b) {
+      return a.x === b.x && a.y === b.y;
+    }
+
+    function key(cell) {
+      return `${cell.x},${cell.y}`;
+    }
+
+    function inBounds(cell) {
+      return cell.x >= 0 && cell.x < cells && cell.y >= 0 && cell.y < cells;
+    }
+
+    function projectedBody(willEat) {
+      return willEat ? snake : snake.slice(0, -1);
+    }
+
+    function isSafeCell(cell, body) {
+      return inBounds(cell) && !body.some((part) => sameCell(part, cell));
+    }
+
+    function findPath(start, target) {
+      const blocked = new Set(snake.slice(0, -1).map(key));
+      const queue = [{ cell: start, first: null }];
+      const visited = new Set([key(start)]);
+
+      for (let index = 0; index < queue.length; index += 1) {
+        const item = queue[index];
+        if (sameCell(item.cell, target)) return item.first;
+
+        for (const move of Object.values(dirs)) {
+          const next = { x: item.cell.x + move.x, y: item.cell.y + move.y };
+          const nextKey = key(next);
+          if (!inBounds(next) || blocked.has(nextKey) || visited.has(nextKey)) continue;
+          visited.add(nextKey);
+          queue.push({ cell: next, first: item.first || move });
+        }
+      }
+
+      return null;
+    }
+
+    function openArea(start, body) {
+      const blocked = new Set(body.map(key));
+      const queue = [start];
+      const visited = new Set([key(start)]);
+
+      for (let index = 0; index < queue.length; index += 1) {
+        const cell = queue[index];
+        for (const move of Object.values(dirs)) {
+          const next = { x: cell.x + move.x, y: cell.y + move.y };
+          const nextKey = key(next);
+          if (!inBounds(next) || blocked.has(nextKey) || visited.has(nextKey)) continue;
+          visited.add(nextKey);
+          queue.push(next);
+        }
+      }
+
+      return visited.size;
+    }
+
+    function chooseAutoDirection() {
+      const head = snake[0];
+      const pathMove = findPath(head, food);
+      const candidates = Object.values(dirs)
+        .filter((move) => move.x !== -dir.x || move.y !== -dir.y)
+        .map((move) => {
+          const next = { x: head.x + move.x, y: head.y + move.y };
+          const willEat = sameCell(next, food);
+          const body = projectedBody(willEat);
+          const safe = isSafeCell(next, body);
+          return {
+            move,
+            next,
+            safe,
+            area: safe ? openArea(next, [next, ...body]) : -1,
+            distance: Math.abs(next.x - food.x) + Math.abs(next.y - food.y)
+          };
+        })
+        .filter((item) => item.safe);
+
+      if (!candidates.length) return nextDir;
+      const pathCandidate = candidates.find((item) => pathMove && item.move.x === pathMove.x && item.move.y === pathMove.y);
+      if (pathCandidate && pathCandidate.area >= snake.length) return pathCandidate.move;
+
+      candidates.sort((a, b) => b.area - a.area || a.distance - b.distance);
+      return candidates[0].move;
+    }
+
     function step(now) {
       if (gameOverAt) {
         if (now - gameOverAt > 900) reset();
         return;
       }
 
+      if (autoPlay) nextDir = chooseAutoDirection();
       dir = nextDir;
       const head = snake[0];
       const next = { x: head.x + dir.x, y: head.y + dir.y };
@@ -360,12 +460,28 @@
       };
       if (map[event.code]) {
         event.preventDefault();
+        autoPlay = false;
+        updateMode();
         setDirection(map[event.code]);
       }
     });
 
     document.querySelectorAll("[data-dir]").forEach((button) => {
-      button.addEventListener("click", () => setDirection(button.dataset.dir));
+      button.addEventListener("click", () => {
+        autoPlay = false;
+        updateMode();
+        setDirection(button.dataset.dir);
+      });
+    });
+
+    toggleAutoBtn.addEventListener("click", () => {
+      autoPlay = !autoPlay;
+      updateMode();
+      messageEl.textContent = autoPlay ? "自动模式" : "手动模式";
+      messageEl.style.opacity = "1";
+      setTimeout(() => {
+        if (!gameOverAt) messageEl.style.opacity = "0";
+      }, 900);
     });
 
     restartBtn.addEventListener("click", reset);
